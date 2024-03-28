@@ -1,6 +1,4 @@
-from itertools import product
 import json
-import sqlite3
 import sys
 import xml.etree.ElementTree as ET  # noqa: N817
 from typing import Any
