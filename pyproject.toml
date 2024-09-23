@@ -1,0 +1,29 @@
+[project]
+name = "Nutritions"
+version = "0"
+
+readme = "README.md" # Optional
+
+requires-python = ">=3.11"
+dependencies = ["requests>2,<3"]
+
+
+[tool.ruff]
+# Enable Pyflakes `E` and `F` codes by default.
+lint.select = [
+    "E",
+    "F",
+    "W",
+    "I",
+    "N",
+    "UP",
+    "B",
+    "G",
+    "PIE",
+    "TCH",
+    "PLE",
+    "PLW",
+]
+lint.ignore = []
+line-length = 100
+output-format = "full"

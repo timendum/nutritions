@@ -1,13 +1,17 @@
 const allData = [];
 
-function handleEvent(e) {
+let handleEvent = function (e) {
     // console.log(e.target.responseURL, e.target.responseText);
     const rURL = e.target.responseURL;
-    if (!rURL.startsWith("https://spesaonline.esselunga.it/commerce/resources/auth/displayable/detail/")) {
+    if (!rURL.startsWith("https://spesaonline.esselunga.it/commerce/resources/") || rURL.indexOf("/displayable/detail/") < 0) {
         return;
     }
     const jData = JSON.parse(e.target.responseText);
     allData.push([rURL, jData]);
+    try {
+        console.log("Last", allData[allData.length-1][1].displayableProduct.description)
+    } catch(e) {
+    }
 }
 
 const orig_open = XMLHttpRequest.prototype.open;

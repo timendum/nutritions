@@ -1,12 +1,18 @@
 import json
+import re
 import sqlite3
 import sys
-import xml.etree.ElementTree as ET  # noqa: N817
 from http.cookiejar import MozillaCookieJar
 from time import sleep
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import requests
+
+import uxml
+
+if TYPE_CHECKING:
+    import xml.etree.ElementTree as ET  # noqa: N817
+
 
 KCAL_TO_KJ = 4.184
 
@@ -43,6 +49,7 @@ class Coop:
         self._conn = conn
         cur = conn.cursor()
         self._facts_labels = {k: v for v, k in cur.execute("SELECT id, label from nutrition_facts")}
+        self._ingredients = {k: v for v, k in cur.execute("SELECT id, label from main_ingredients")}
 
     def get_slugs_by_category(self, category_id: int) -> list[str]:
         current_page = 1
@@ -68,14 +75,61 @@ class Coop:
             current_page += 1
         return slugs
 
+    @staticmethod
+    def _p_id(p: Any) -> str:
+        return p.get("id")
+
+    @staticmethod
+    def _p_sid(p: Any) -> str:
+        return p.get("slug")
+
     def _map_ninfos(self, p: Any) -> list[tuple]:
         try:
             return self._real_map_ninfos(p)
         except Exception as e:
-            print(f"Error on {p.get('id', p['displayableProduct']['id'])}", e)
+            print(f"Error on {self._p_sid(p)}", e)
             return []
 
-    def _four_td_transform(self, tree: ET.Element) -> ET.Element:
+    def _map_ingredients(self, p: Any) -> list[tuple]:
+        try:
+            return self._real_map_ingredients(p)
+        except Exception as e:
+            print(f"Error on {self._p_sid(p)}", e)
+            return []
+
+    def _parse_ingredients_texts(self, p: Any, singr: str) -> list[tuple]:
+        infos = []
+        for ingr, id in self._ingredients.items():
+            re_ingr = r"(" + ingr.replace(" ", r"\s+") + r")\s+\(?(\d+(?:[\.\,]\d+)?)\s*\%\)?"
+            rse = re.search(re_ingr, singr, re.I)
+            if rse:
+                infos.append(
+                    (self._p_id(p), id, rse[1].lower(), float(rse[2].replace(",", ".")), rse[0])
+                )
+            else:
+                re_ingr = r"\(?(\d+(?:[\.\,]\d+)?)\s*\%\)?\s+(" + ingr.replace(" ", r"\s+") + r")"
+                rse = re.search(re_ingr, singr, re.I)
+                if rse:
+                    infos.append(
+                        (self._p_id(p), id, rse[2].lower(), float(rse[1].replace(",", ".")), rse[0])
+                    )
+        return infos
+
+    def _real_map_ingredients(self, p: Any) -> list[tuple]:
+        try:
+            xml = p["metaData"]["product_description"]["INGREDIENTS_OTHER"]
+        except KeyError:
+            try:
+                xml = p["metaData"]["product_description"]["INGREDIENTS"]
+            except KeyError:
+                print(f"No Nutritional Info for {p['slug']}")
+                return []
+        tree = uxml.parse(xml)
+        singr = "".join(tree.itertext())
+        singr = singr.replace("*", "")
+        return self._parse_ingredients_texts(p, singr)
+
+    def _four_td_transform(self, tree: "ET.Element") -> "ET.Element":
         if len([tr for tr in tree.findall(".//table[1]//tr") if len(tr.findall("td")) == 4]) < 4:
             return tree
         thd = ["".join(e.itertext()) for e in tree.findall(".//table[1]//tr[1]/td")]
@@ -157,8 +211,7 @@ class Coop:
         except KeyError:
             print(f"No Nutritional Info for {p['slug']}")
             return []
-        xml = xml.replace("&nbsp;", " ").replace("&deg;", " ").replace("&egrave;", "e")
-        tree = ET.fromstring("<root>" + xml + "</root>")
+        tree = uxml.parse(xml)
         tree = self._four_td_transform(tree)
         rows = [
             ("".join(e[0].itertext()), "".join(e[1].itertext()))
@@ -174,7 +227,7 @@ class Coop:
         for row in rows:
             t, v = row
             t, v = t.lower().replace("di cui", "").strip("-:* \t\n"), v.strip().lower()
-            if "100 g" in v:
+            if "100 g" in v or "100g" in v:
                 continue
             if not any([c.isnumeric() for c in v]):
                 continue
@@ -185,7 +238,7 @@ class Coop:
             if val is None:
                 continue
             try:
-                infos.append((p["id"], val, self._facts_labels[t]))
+                infos.append((self._p_id(p), val, self._facts_labels[t]))
             except KeyError:
                 print(f"Missing {repr(t)} on {p['slug']}")
         return infos
@@ -237,6 +290,13 @@ class Coop:
             INSERT OR REPLACE INTO product_facts(fact_id, product_id, unit_value)
             SELECT nf.id, ?, ? from nutrition_facts as nf where nf.id = ? and nf.id > 0""",
             (ninfos for p in products for ninfos in self._map_ninfos(p)),
+        )
+        self._conn.executemany(
+            """
+            INSERT OR REPLACE INTO product_ingredients(
+                product_id, ingredients_id, ingredient_text, unit_value, orig)
+            VALUES (?,?,?,?,?)""",
+            (ninfos for p in products for ninfos in self._map_ingredients(p)),
         )
         self._conn.commit()
         return products

@@ -2,3 +2,4 @@ data
 *.json
 cookies.txt
 nutritions.db
+*.csv

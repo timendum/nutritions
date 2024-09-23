@@ -1,8 +1,8 @@
 import json
 import sys
-import xml.etree.ElementTree as ET  # noqa: N817
 from typing import Any
 
+import uxml
 from coop import Coop
 
 
@@ -19,6 +19,10 @@ class Esselunga(Coop):
         products = [x[1] for x in jdata]
         self._save_categories(products)
         self._save_products(products)
+
+    @staticmethod
+    def _p_id(p: Any) -> str:
+        return p["displayableProduct"]["id"]
 
     def _save_categories(self, products: list[Any]):
         for p in products:
@@ -46,7 +50,7 @@ class Esselunga(Coop):
                 .replace("< 0", "&lt; 0")
                 .replace("<1", "&lt;1")
             )
-            tree = ET.fromstring("<root>" + infos["value"] + "</root>")
+            tree = uxml.parse(infos["value"])
             trs = tree.findall("table/tbody/tr")
             ths = tree.findall("table/thead/tr/th")
             headings = "".join(ths[1].itertext()).strip().lower()
@@ -65,11 +69,22 @@ class Esselunga(Coop):
                 if not label:
                     continue
                 try:
-                    ret.append((p["displayableProduct"]["id"], val, self._facts_labels[label]))
+                    ret.append((self._p_id(p), val, self._facts_labels[label]))
                 except KeyError:
                     print(f"Missing {repr(label)} on {p['displayableProduct']['id']}")
             return ret
         raise ValueError("Missing Valori nutrizionali")
+
+    def _real_map_ingredients(self, p: Any) -> list[tuple]:
+        # Search for Nutritional Facts
+        for infos in p["informations"]:
+            if infos["label"].strip().lower() != "ingredienti":
+                continue
+            tree = uxml.parse(infos["value"])
+            singr = "".join(tree.itertext())
+            singr = singr.replace("*", "")
+            return self._parse_ingredients_texts(p, singr)
+        raise ValueError("Missing Ingredienti")
 
     def _save_products(self, products: list[Any]):
         self._conn.executemany(
@@ -101,6 +116,7 @@ class Esselunga(Coop):
                     p["displayableProduct"]["menuItemPath"][-1]["menuItemId"],
                 )
                 for p in products
+                if p["displayableProduct"]["menuItemPath"]
             ],
         )
         self._conn.executemany(
@@ -108,6 +124,13 @@ class Esselunga(Coop):
             INSERT OR REPLACE INTO product_facts(fact_id, product_id, unit_value)
             SELECT nf.id, ?, ? from nutrition_facts as nf where nf.id = ? and nf.id > 0""",
             (ninfos for p in products for ninfos in self._map_ninfos(p)),
+        )
+        self._conn.executemany(
+            """
+            INSERT OR REPLACE INTO product_ingredients(
+                product_id, ingredients_id, ingredient_text, unit_value, orig)
+            VALUES (?,?,?,?,?)""",
+            (ninfos for p in products for ninfos in self._map_ingredients(p)),
         )
         self._conn.commit()
         return products
